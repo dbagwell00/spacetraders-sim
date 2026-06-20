@@ -260,6 +260,32 @@ async def run_detail(run_id: int) -> Any:
     })
 
 
+_universe_coords: dict[str, list[int]] | None = None
+
+
+@app.route("/api/universe")
+async def universe() -> Any:
+    """The live universe backdrop: every system's galaxy coords (cached — static
+    per reset) plus the CURRENT real probe/hauler distribution from prod. The UI
+    draws this on page load (like whater's map); a live sim then animates its
+    own spread on top, picking up from this same state."""
+    global _universe_coords
+    pool = await _db()
+    if _universe_coords is None:
+        rows = await pool.fetch("SELECT symbol, x, y FROM systems")
+        _universe_coords = {r["symbol"]: [r["x"], r["y"]] for r in rows}
+    pos: dict[str, list[int]] = {}
+    for s in await pool.fetch("SELECT role, position FROM ships"):
+        sys = "-".join(s["position"].split("-")[:2])
+        role = s["role"]
+        idx = 0 if role in ("SATELLITE", "EXPLORER") else (
+            1 if "HAULER" in role else None)
+        if idx is None:
+            continue
+        pos.setdefault(sys, [0, 0])[idx] += 1
+    return jsonify({"systems": _universe_coords, "pos": pos})
+
+
 @app.route("/healthz")
 async def healthz() -> Any:
     return jsonify({"ok": True, "running": list(_procs.keys())})

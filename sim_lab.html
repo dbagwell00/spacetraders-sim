@@ -133,7 +133,8 @@ const $ = id => document.getElementById(id);
 const fmt = n => n==null ? "—" : Number(n).toLocaleString();
 const fmtM = n => n==null ? "—" : (Math.abs(n)>=1e6 ? (n/1e6).toFixed(2)+"M" : fmt(n));
 let es=null, runId=null, credits0=null;
-let systems={}, positions={}, mapBounds=null;
+let uni={}, nodeArr=[], positions={}, livePos={};   // universe coords + spread overlay
+let mScale=1, mOffX=0, mOffY=0;                       // map pan/zoom transform (CSS px)
 let frames=[];            // full per-tick history: {h,c,pos,trades,buys,api,ships}
 let cursor=0, follow=true; // cursor = displayed tick index; follow = track newest
 
@@ -167,7 +168,8 @@ function onFrame(f){
   }
   else if(f.type==="start"){
     credits0=f.credits0; setStatus("running "+f.scenario+" · "+f.ships+" ships · "+f.hours+"h");
-    systems=f.systems||{}; frames=[]; cursor=0; computeMapBounds(); $("scrub").max=0; render(0);
+    if(f.systems && Object.keys(f.systems).length) setUniverse(f.systems); // sim's own universe
+    frames=[]; cursor=0; $("scrub").max=0; render(0);
   }
   else if(f.type==="tick"){
     frames.push({h:f.hours,c:f.credits,pos:f.pos||{},trades:f.trades,buys:f.buys,api:f.api,ships:f.ships});
@@ -216,7 +218,7 @@ function drawChart(cursorIdx){
 }
 
 function render(i){
-  if(!frames.length){ positions={}; drawMap(); drawChart(); $("scrubLabel").textContent="—"; return; }
+  if(!frames.length){ positions=livePos; drawMap(); drawChart(); $("scrubLabel").textContent="live universe (no run)"; return; }
   i=Math.max(0,Math.min(i,frames.length-1)); cursor=i;
   const f=frames[i];
   $("m-clock").textContent=(f.h!=null?f.h.toFixed(2):"—")+"h";
@@ -233,30 +235,45 @@ function setLiveBtn(){ const b=$("liveBtn");
   b.style.background=follow?"var(--green)":"var(--bg3)";
   b.style.color=follow?"#03210f":"var(--muted)"; b.textContent=follow?"● LIVE":"▶ resume live"; }
 
-function computeMapBounds(){
-  const xs=[], ys=[];
-  for(const k in systems){ xs.push(systems[k][0]); ys.push(systems[k][1]); }
-  mapBounds = xs.length ? {minx:Math.min(...xs),maxx:Math.max(...xs),miny:Math.min(...ys),maxy:Math.max(...ys)} : null;
+function setUniverse(coords){
+  uni=coords;
+  nodeArr=Object.keys(coords).map(s=>({s,x:coords[s][0],y:coords[s][1]}));
+  fitView();
+}
+function fitView(){
+  if(!nodeArr.length) return;
+  const xs=nodeArr.map(n=>n.x), ys=nodeArr.map(n=>n.y);
+  const minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
+  const cv=$("map"), W=cv.clientWidth, H=cv.clientHeight, pad=20;
+  const w=(maxx-minx)||1, h=(maxy-miny)||1;
+  mScale=Math.min((W-2*pad)/w,(H-2*pad)/h);
+  mOffX=(W-w*mScale)/2-minx*mScale; mOffY=(H-h*mScale)/2-miny*mScale;
+}
+async function loadUniverse(){
+  try{ const u=await (await fetch("/api/universe")).json();
+    setUniverse(u.systems||{}); livePos=u.pos||{};
+    if(!frames.length){ positions=livePos; } drawMap();
+  }catch(e){ console.error("universe load failed",e); }
 }
 function drawMap(){
   const cv=$("map"), dpr=devicePixelRatio||1;
   const W=cv.clientWidth, H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr;
-  const x=cv.getContext("2d"); x.scale(dpr,dpr); x.clearRect(0,0,W,H);
-  if(!mapBounds){ x.fillStyle="#8b949e"; x.font="11px monospace"; x.fillText("map loads when the sim starts…",10,20); return; }
-  const pad=16, b=mapBounds;
-  const sx=v=>pad+(W-2*pad)*((v-b.minx)/((b.maxx-b.minx)||1));
-  const sy=v=>pad+(H-2*pad)*((v-b.miny)/((b.maxy-b.miny)||1));
-  x.fillStyle="#1c2330";                       // dim base systems
-  for(const k in systems){ const c=systems[k]; x.beginPath(); x.arc(sx(c[0]),sy(c[1]),1.2,0,7); x.fill(); }
+  const x=cv.getContext("2d"); x.setTransform(dpr,0,0,dpr,0,0); x.clearRect(0,0,W,H);
+  if(!nodeArr.length){ x.fillStyle="#8b949e"; x.font="11px monospace"; x.fillText("loading universe…",10,20); return; }
+  x.save(); x.translate(mOffX,mOffY); x.scale(mScale,mScale);
+  const r=v=>v/mScale;                          // screen-constant radius
+  x.fillStyle="#1c2330";                        // every mapped system (backdrop)
+  for(const n of nodeArr){ x.beginPath(); x.arc(n.x,n.y,r(1.3),0,7); x.fill(); }
   let tp=0,th=0,occ=0;
-  for(const k in positions){ const c=systems[k]; if(!c) continue;
-    const X=sx(c[0]), Y=sy(c[1]), p=positions[k][0]||0, h=positions[k][1]||0;
-    if(h){ x.fillStyle="rgba(63,185,80,.85)"; x.beginPath(); x.arc(X,Y,Math.min(2+Math.sqrt(h)*1.6,9),0,7); x.fill(); }
-    if(p){ x.fillStyle="rgba(88,166,255,.8)"; x.beginPath(); x.arc(X,Y,Math.min(1.5+Math.sqrt(p)*1.1,7),0,7); x.fill(); }
+  for(const s in positions){ const c=uni[s]; if(!c) continue;
+    const p=positions[s][0]||0, h=positions[s][1]||0;
+    if(h){ x.fillStyle="rgba(63,185,80,.9)"; x.beginPath(); x.arc(c[0],c[1],r(2+Math.sqrt(h)*1.8),0,7); x.fill(); }
+    if(p){ x.fillStyle="rgba(88,166,255,.85)"; x.beginPath(); x.arc(c[0],c[1],r(1.5+Math.sqrt(p)*1.2),0,7); x.fill(); }
     tp+=p; th+=h; occ++;
   }
+  x.restore();
   x.fillStyle="#8b949e"; x.font="10px monospace";
-  x.fillText(occ+" systems occupied · "+tp+" probes · "+th+" haulers",8,H-8);
+  x.fillText(occ+" occupied · "+tp+" probes · "+th+" haulers · "+nodeArr.length+" systems · drag/scroll to pan/zoom",8,H-8);
 }
 
 async function loadRuns(){
@@ -277,8 +294,7 @@ function escape(s){ return s.replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&a
 async function openRun(id){
   const r = await (await fetch("/api/sim/runs/"+id)).json();
   // Past runs persist a downsampled credits series (no per-tick map snapshots),
-  // so the chart is scrubbable but the map is live-only for now.
-  systems={}; mapBounds=null;
+  // so the chart is scrubbable but the map shows the live universe backdrop only.
   frames = (r.series||[]).map(s=>({h:s.h,c:s.c,pos:{},trades:s.tr,api:s.api}));
   follow=false; setLiveBtn();
   $("scrub").max=Math.max(0,frames.length-1); $("scrub").value=Math.max(0,frames.length-1);
@@ -289,8 +305,19 @@ async function openRun(id){
 $("launch").onclick=launch; $("stop").onclick=stop;
 $("scrub").oninput=e=>{ follow=false; setLiveBtn(); render(+e.target.value); };
 $("liveBtn").onclick=()=>{ follow=true; setLiveBtn(); cursor=Math.max(0,frames.length-1); $("scrub").value=cursor; render(cursor); };
-addEventListener("resize",()=>render(cursor));
-loadRuns(); setLiveBtn(); render(0);
+addEventListener("resize",()=>{fitView();render(cursor);});
+// Map pan/zoom (whater-style): drag to pan, wheel to zoom around the cursor.
+(function(){ const cv=$("map"); let drag=false,lx=0,ly=0;
+  cv.addEventListener("mousedown",e=>{drag=true;lx=e.clientX;ly=e.clientY;});
+  addEventListener("mouseup",()=>drag=false);
+  addEventListener("mousemove",e=>{ if(!drag)return; mOffX+=e.clientX-lx; mOffY+=e.clientY-ly; lx=e.clientX;ly=e.clientY; drawMap(); });
+  cv.addEventListener("wheel",e=>{ e.preventDefault();
+    const b=cv.getBoundingClientRect(), mx=e.clientX-b.left, my=e.clientY-b.top, f=e.deltaY<0?1.2:0.8;
+    mOffX=mx-(mx-mOffX)*f; mOffY=my-(my-mOffY)*f; mScale*=f; drawMap();
+  },{passive:false});
+  cv.style.cursor="grab";
+})();
+loadUniverse(); loadRuns(); setLiveBtn(); render(0);
 </script>
 </body>
 </html>
