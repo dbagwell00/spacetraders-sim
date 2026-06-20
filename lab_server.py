@@ -145,7 +145,18 @@ async def stream(run_id: int) -> Any:
 
             tick_n = 0
             assert proc.stdout is not None
-            async for raw in proc.stdout:
+            while True:
+                # Read with a timeout so we can heartbeat during the long silent
+                # `live` seed (~1-3 min before the first frame). Without this the
+                # idle SSE connection drops, EventSource reconnects, hits the now
+                # non-pending run (409), and the UI sticks on "stream closed".
+                try:
+                    raw = await asyncio.wait_for(proc.stdout.readline(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # SSE comment — keeps the connection warm
+                    continue
+                if not raw:
+                    break  # EOF: subprocess closed stdout
                 line = raw.decode(errors="replace").strip()
                 if not line:
                     continue
