@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🧪 Sim Lab</title>
+<style>
+  :root {
+    --bg:#0e1116; --bg2:#161b22; --bg3:#21262d; --dim:#30363d;
+    --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950;
+    --red:#f85149; --yellow:#d29922; --purple:#bc8cff;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+         background:var(--bg); color:var(--text); }
+  h1 { font-size:18px; margin:0; padding:12px 16px; background:var(--bg2);
+       border-bottom:1px solid var(--dim); }
+  h1 small { color:var(--muted); font-weight:normal; font-size:12px; }
+  .wrap { display:grid; grid-template-columns:300px 1fr; gap:0; height:calc(100vh - 45px); }
+  .panel { padding:14px 16px; overflow:auto; }
+  #left { background:var(--bg2); border-right:1px solid var(--dim); }
+  label { display:block; color:var(--muted); margin:10px 0 3px; font-size:11px;
+          text-transform:uppercase; letter-spacing:.04em; }
+  input,select,textarea { width:100%; background:var(--bg); color:var(--text);
+    border:1px solid var(--dim); border-radius:5px; padding:6px 8px; font:inherit; }
+  textarea { resize:vertical; min-height:48px; }
+  .row { display:flex; gap:8px; }
+  .row > div { flex:1; }
+  .chk { display:flex; align-items:center; gap:7px; margin-top:10px; }
+  .chk input { width:auto; }
+  button { cursor:pointer; border:none; border-radius:6px; padding:9px 14px;
+           font:inherit; font-weight:600; }
+  #launch { width:100%; margin-top:14px; background:var(--green); color:#03210f; }
+  #stop { background:var(--red); color:#2a0a08; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
+           gap:10px; margin-bottom:14px; }
+  .card { background:var(--bg2); border:1px solid var(--dim); border-radius:8px;
+          padding:10px 12px; }
+  .card .k { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:21px; font-weight:700; margin-top:2px; }
+  .v.credits { color:var(--green); } .v.trades { color:var(--accent); }
+  .v.api { color:var(--yellow); } .v.clock { color:var(--purple); }
+  #chartWrap { background:var(--bg2); border:1px solid var(--dim); border-radius:8px;
+               padding:10px; margin-bottom:14px; }
+  canvas { width:100%; height:170px; display:block; }
+  .split { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .box { background:var(--bg2); border:1px solid var(--dim); border-radius:8px; overflow:hidden; }
+  .box h3 { margin:0; padding:8px 12px; font-size:11px; text-transform:uppercase;
+            color:var(--muted); letter-spacing:.04em; background:var(--bg3);
+            border-bottom:1px solid var(--dim); }
+  .feed { max-height:260px; overflow:auto; font-size:12px; }
+  .feed .ev { padding:3px 12px; border-bottom:1px solid var(--bg); white-space:nowrap; }
+  .ev .a { display:inline-block; width:64px; font-weight:600; }
+  .a-sell { color:var(--green); } .a-purchase { color:var(--yellow); }
+  .a-jump,.a-navigate { color:var(--accent); } .a-purchase_ship { color:var(--purple); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 10px;
+       position:sticky; top:0; background:var(--bg3); font-size:10px; text-transform:uppercase; }
+  td { padding:5px 10px; border-bottom:1px solid var(--bg); }
+  tr.run:hover td { background:var(--bg3); cursor:pointer; }
+  .pill { padding:1px 7px; border-radius:10px; font-size:10px; font-weight:700; }
+  .s-running { background:#1f6feb33; color:var(--accent); }
+  .s-done { background:#3fb95033; color:var(--green); }
+  .s-failed { background:#f8514933; color:var(--red); }
+  .s-stopped,.s-pending { background:#8b949e33; color:var(--muted); }
+  .muted { color:var(--muted); }
+  #status { font-size:12px; color:var(--muted); margin-top:8px; min-height:18px; }
+</style>
+</head>
+<body>
+<h1>🧪 Sim Lab <small>— launch · watch · review</small></h1>
+<div class="wrap">
+  <!-- ── launch form ── -->
+  <div id="left" class="panel">
+    <label>Label (optional)</label>
+    <input id="label" placeholder="e.g. spread vs concentrate">
+    <label>Scenario</label>
+    <select id="scenario">
+      <option value="live">live (PG snapshot)</option>
+      <option value="greenfield">greenfield</option>
+      <option value="gate-rush">gate-rush</option>
+    </select>
+    <div class="row">
+      <div><label>Hours (sim)</label><input id="hours" type="number" value="2" step="0.5" min="0.1"></div>
+      <div><label>Seed</label><input id="seed" type="number" value="0"></div>
+    </div>
+    <div class="row">
+      <div><label>Tick secs</label><input id="tick" type="number" value="5" step="1" min="1"></div>
+      <div><label>API r/s (0=off)</label><input id="api" type="number" value="0" step="0.5" min="0"></div>
+    </div>
+    <label>N systems (greenfield)</label>
+    <input id="nsys" type="number" value="8" min="1">
+    <div class="chk"><input id="evolving" type="checkbox" checked>
+      <label style="margin:0;text-transform:none;letter-spacing:0;">evolving market scores</label></div>
+    <label>CFG overrides (one per line, key=value)</label>
+    <textarea id="cfg" placeholder="hauler_one_per_system=true&#10;manifest_routes_per_system=1"></textarea>
+    <button id="launch">▶ Launch sim</button>
+    <button id="stop" style="width:100%;margin-top:8px;display:none;">■ Stop</button>
+    <div id="status"></div>
+  </div>
+
+  <!-- ── live view + history ── -->
+  <div class="panel">
+    <div class="cards">
+      <div class="card"><div class="k">Sim clock</div><div class="v clock" id="m-clock">—</div></div>
+      <div class="card"><div class="k">Credits</div><div class="v credits" id="m-credits">—</div></div>
+      <div class="card"><div class="k">Trades</div><div class="v trades" id="m-trades">—</div></div>
+      <div class="card"><div class="k">Buys</div><div class="v" id="m-buys">—</div></div>
+      <div class="card"><div class="k">API calls</div><div class="v api" id="m-api">—</div></div>
+      <div class="card"><div class="k">In transit</div><div class="v" id="m-transit">—</div></div>
+    </div>
+    <div id="chartWrap"><canvas id="chart"></canvas></div>
+    <div class="split">
+      <div class="box"><h3>Live event feed</h3><div class="feed" id="feed"></div></div>
+      <div class="box"><h3>Past runs</h3><div style="max-height:260px;overflow:auto;">
+        <table><thead><tr><th>#</th><th>Label / scenario</th><th>Status</th><th>End cr</th><th>Trades</th><th>$/hr</th></tr></thead>
+        <tbody id="runs"></tbody></table></div></div>
+    </div>
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => n==null ? "—" : Number(n).toLocaleString();
+const fmtM = n => n==null ? "—" : (Math.abs(n)>=1e6 ? (n/1e6).toFixed(2)+"M" : fmt(n));
+let es=null, runId=null, chart=[], credits0=null;
+
+function setStatus(t, cls){ $("status").textContent=t; $("status").style.color = cls||"var(--muted)"; }
+
+async function launch(){
+  const cfg = $("cfg").value.split("\n").map(s=>s.trim()).filter(s=>s.includes("="));
+  const params = {
+    label: $("label").value, scenario: $("scenario").value,
+    hours: parseFloat($("hours").value), seed: parseInt($("seed").value),
+    tick_every_secs: parseFloat($("tick").value), api_rate_limit: parseFloat($("api").value),
+    n_systems: parseInt($("nsys").value), evolving_market_scores: $("evolving").checked, cfg
+  };
+  setStatus("launching…");
+  const r = await fetch("/api/sim/launch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(params)});
+  const j = await r.json();
+  if(!r.ok){ setStatus("error: "+(j.error||r.status),"var(--red)"); return; }
+  runId = j.run_id; chart=[]; credits0=null; $("feed").innerHTML=""; drawChart();
+  $("launch").disabled=true; $("stop").style.display="block";
+  es = new EventSource("/api/sim/stream/"+runId);
+  es.onmessage = e => onFrame(JSON.parse(e.data));
+  es.addEventListener("end", e => finish(JSON.parse(e.data).status));
+  es.onerror = () => { setStatus("stream closed","var(--yellow)"); };
+}
+
+function onFrame(f){
+  if(f.type==="start"){ credits0=f.credits0; setStatus("running "+f.scenario+" · "+f.ships+" ships · "+f.hours+"h"); }
+  else if(f.type==="tick"){
+    $("m-clock").textContent = f.hours.toFixed(2)+"h";
+    $("m-credits").textContent = fmtM(f.credits);
+    $("m-trades").textContent = fmt(f.trades);
+    $("m-buys").textContent = fmt(f.buys);
+    $("m-api").textContent = fmt(f.api);
+    $("m-transit").textContent = f.ships ? fmt(f.ships.transit) : "—";
+    chart.push({h:f.hours,c:f.credits}); drawChart();
+    (f.new_events||[]).forEach(addEvent);
+  } else if(f.type==="done"){
+    setStatus("done · "+f.stop_reason+" · "+fmtM(f.credits)+" cr · "+fmt(f.trades)+" trades · "+f.wall_secs+"s wall","var(--green)");
+  } else if(f.type==="error"){ setStatus("sim error: "+f.error,"var(--red)"); }
+}
+
+function addEvent(ev){
+  const d=document.createElement("div"); d.className="ev";
+  const parts=[]; if(ev.good)parts.push(ev.good); if(ev.units)parts.push("x"+ev.units);
+  if(ev.price)parts.push("@"+fmt(ev.price)); if(ev.waypoint)parts.push(ev.waypoint);
+  if(ev.destination)parts.push("→"+ev.destination);
+  d.innerHTML=`<span class="a a-${ev.a}">${ev.a}</span>${parts.join(" ")}`;
+  const f=$("feed"); f.insertBefore(d,f.firstChild);
+  while(f.childElementCount>120) f.removeChild(f.lastChild);
+}
+
+function finish(status){ if(es){es.close();es=null;} $("launch").disabled=false; $("stop").style.display="none"; loadRuns(); }
+
+async function stop(){ if(runId) await fetch("/api/sim/stop/"+runId,{method:"POST"}); }
+
+function drawChart(series){
+  const data = series || chart;
+  const cv=$("chart"), dpr=devicePixelRatio||1;
+  const W=cv.clientWidth, H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr;
+  const x=cv.getContext("2d"); x.scale(dpr,dpr); x.clearRect(0,0,W,H);
+  if(data.length<2){ x.fillStyle="#8b949e"; x.fillText("waiting for ticks…",10,20); return; }
+  const cs=data.map(d=>d.c), hs=data.map(d=>d.h);
+  const cmin=Math.min(...cs), cmax=Math.max(...cs), hmax=Math.max(...hs)||1;
+  const pad=24, px=h=>pad+(W-2*pad)*(h/hmax), py=c=>H-pad-(H-2*pad)*((c-cmin)/((cmax-cmin)||1));
+  x.strokeStyle="#30363d"; x.beginPath(); x.moveTo(pad,H-pad); x.lineTo(W-pad,H-pad); x.stroke();
+  x.strokeStyle="#3fb950"; x.lineWidth=2; x.beginPath();
+  data.forEach((d,i)=>{ const X=px(d.h),Y=py(d.c); i?x.lineTo(X,Y):x.moveTo(X,Y); }); x.stroke();
+  x.fillStyle="#8b949e"; x.font="10px monospace";
+  x.fillText(fmtM(cmax),2,12); x.fillText(fmtM(cmin),2,H-pad+10); x.fillText(hmax.toFixed(1)+"h",W-30,H-8);
+}
+
+async function loadRuns(){
+  const rows = await (await fetch("/api/sim/runs")).json();
+  $("runs").innerHTML = rows.map(r=>{
+    const f=r.final||{}, p=r.params||{};
+    const cr = f.credits, hrs = f.sim_secs? f.sim_secs/3600 : (p.hours||0);
+    const dph = (cr!=null && hrs) ? fmtM((cr-(p._c0||0))/hrs) : "—";
+    return `<tr class="run" onclick="openRun(${r.id})">
+      <td>${r.id}</td>
+      <td>${r.label?escape(r.label)+" · ":""}<span class="muted">${p.scenario||""} ${p.hours||""}h s${p.seed||0}</span></td>
+      <td><span class="pill s-${r.status}">${r.status}</span></td>
+      <td>${cr!=null?fmtM(cr):"—"}</td><td>${fmt(f.trades)}</td><td>${f.credits!=null?fmtM(f.credits/(hrs||1)):"—"}</td></tr>`;
+  }).join("");
+}
+function escape(s){ return s.replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;"}[c])); }
+
+async function openRun(id){
+  const r = await (await fetch("/api/sim/runs/"+id)).json();
+  if(r.series && r.series.length){ chart = r.series.map(s=>({h:s.h,c:s.c})); drawChart(); }
+  const f=r.final||{};
+  $("m-clock").textContent=(f.sim_secs?(f.sim_secs/3600).toFixed(2):"—")+"h";
+  $("m-credits").textContent=fmtM(f.credits); $("m-trades").textContent=fmt(f.trades);
+  $("m-buys").textContent=fmt(f.buys); $("m-api").textContent=fmt(f.api);
+  setStatus(`run #${id} · ${r.status} · ${JSON.stringify(r.params.cfg||[])}`);
+}
+
+$("launch").onclick=launch; $("stop").onclick=stop;
+addEventListener("resize",()=>drawChart());
+loadRuns(); drawChart();
+</script>
+</body>
+</html>

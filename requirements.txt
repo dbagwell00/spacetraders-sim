@@ -1,0 +1,4 @@
+# Already present in the spacetraders base image; pinned here for intent.
+quart>=0.19
+hypercorn>=0.16
+asyncpg>=0.29
