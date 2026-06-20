@@ -137,6 +137,11 @@ async def stream(run_id: int) -> Any:
             _procs[run_id] = proc
             await pool.execute("UPDATE sim_runs SET status='running' WHERE id=$1", run_id)
             yield f"event: open\ndata: {json.dumps({'run_id': run_id})}\n\n"
+            # The `live` seeder loads the whole prod snapshot (~1700 ships, every
+            # market/waypoint) before the sim emits its first frame — 1-3 min of
+            # silence. Tell the UI we're seeding so it doesn't look hung.
+            yield ("data: " + json.dumps({
+                "type": "seeding", "scenario": params.get("scenario")}) + "\n\n")
 
             tick_n = 0
             assert proc.stdout is not None
@@ -166,6 +171,14 @@ async def stream(run_id: int) -> Any:
                 elif ft == "error":
                     final = frame
             await proc.wait()
+            # A non-zero exit with no final frame = the subprocess crashed before
+            # reporting. Surface the exit code so the UI shows an error rather
+            # than hanging on "waiting for ticks". (stderr stays DEVNULL — piping
+            # it undrained would deadlock, since the sim logs every tick.)
+            if final is None and proc.returncode not in (0, None):
+                final = {"type": "error", "phase": "exit",
+                         "error": f"sim subprocess exited {proc.returncode}"}
+                yield "data: " + json.dumps(final) + "\n\n"
             status = "done" if (final and final.get("type") == "done") else \
                 ("failed" if (final and final.get("type") == "error") else "stopped")
             await pool.execute(
