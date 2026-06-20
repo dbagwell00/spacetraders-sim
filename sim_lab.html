@@ -246,13 +246,13 @@ function initMap(systems, edges){
   if(!Graph || !window.Sigma){ $("mapInfo").textContent="sigma failed to load"; return; }
   graph = new Graph();
   for(const s in systems){ const c=systems[s];
-    graph.addNode(s, {x:c[0], y:-c[1], size:0.7, color:"#222d3d", label:s}); }
+    graph.addNode(s, {x:c[0], y:-c[1], size:1.0, color:"#9fb0c7", label:s}); }
   for(const e of (edges||[])){ const a=e[0],b=e[1];
-    if(graph.hasNode(a)&&graph.hasNode(b)&&!graph.hasEdge(a,b)) graph.addEdge(a,b,{color:"#14202f",size:0.4}); }
+    if(graph.hasNode(a)&&graph.hasNode(b)&&!graph.hasEdge(a,b)) graph.addEdge(a,b,{color:"#46617f",size:0.8}); }
   if(sig) sig.kill();
   lit=new Set();
   sig = new Sigma(graph, $("map"), {
-    defaultEdgeColor:"#14202f", minCameraRatio:0.03, maxCameraRatio:10,
+    defaultEdgeColor:"#46617f", minCameraRatio:0.03, maxCameraRatio:10,
     labelRenderedSizeThreshold:24, enableEdgeEvents:false,
     labelColor:{color:"#dbe4f0"},
   });
@@ -266,7 +266,7 @@ function applySpread(pos){
   positions=pos||{};
   const next=new Set(Object.keys(positions));
   for(const s of lit){ if(!next.has(s) && graph.hasNode(s)){
-    graph.setNodeAttribute(s,"size",0.7); graph.setNodeAttribute(s,"color","#222d3d"); } }
+    graph.setNodeAttribute(s,"size",1.0); graph.setNodeAttribute(s,"color","#9fb0c7"); } }
   for(const s of next){ if(!graph.hasNode(s)) continue;
     const p=positions[s][0]||0, h=positions[s][1]||0;
     graph.setNodeAttribute(s,"size", 1.1 + Math.min(Math.sqrt(p+h)*0.35, 2.2));
