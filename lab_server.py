@@ -132,6 +132,11 @@ async def stream(run_id: int) -> Any:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *SIM_CMD, *cli, cwd=SIM_CWD,
+                # Raise the StreamReader buffer past the 64KB default: the live
+                # `start` frame carries every mapped system's coords (a single
+                # JSON line that can run to hundreds of KB), which overran the
+                # default and killed the stream with "chunk exceed the limit".
+                limit=2 ** 23,  # 8 MB
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
             _procs[run_id] = proc
