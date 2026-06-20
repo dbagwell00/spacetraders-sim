@@ -110,6 +110,10 @@
       <div class="card"><div class="k">API calls</div><div class="v api" id="m-api">—</div></div>
       <div class="card"><div class="k">In transit</div><div class="v" id="m-transit">—</div></div>
     </div>
+    <div class="box" style="margin-bottom:14px;">
+      <h3>Galaxy — <span style="color:var(--accent)">● probes</span> <span style="color:var(--green)">● haulers</span> spreading</h3>
+      <canvas id="map" style="height:320px;background:#0a0d12;"></canvas>
+    </div>
     <div id="chartWrap"><canvas id="chart"></canvas></div>
     <div class="split">
       <div class="box"><h3>Live event feed</h3><div class="feed" id="feed"></div></div>
@@ -124,6 +128,7 @@ const $ = id => document.getElementById(id);
 const fmt = n => n==null ? "—" : Number(n).toLocaleString();
 const fmtM = n => n==null ? "—" : (Math.abs(n)>=1e6 ? (n/1e6).toFixed(2)+"M" : fmt(n));
 let es=null, runId=null, chart=[], credits0=null;
+let systems={}, positions={}, mapBounds=null;
 
 function setStatus(t, cls){ $("status").textContent=t; $("status").style.color = cls||"var(--muted)"; }
 
@@ -153,7 +158,10 @@ function onFrame(f){
       ? "⏳ seeding live snapshot (~1700 ships) — first tick can take 1–3 min…"
       : "⏳ seeding "+f.scenario+"…", "var(--yellow)");
   }
-  else if(f.type==="start"){ credits0=f.credits0; setStatus("running "+f.scenario+" · "+f.ships+" ships · "+f.hours+"h"); }
+  else if(f.type==="start"){
+    credits0=f.credits0; setStatus("running "+f.scenario+" · "+f.ships+" ships · "+f.hours+"h");
+    systems=f.systems||{}; positions={}; computeMapBounds(); drawMap();
+  }
   else if(f.type==="tick"){
     $("m-clock").textContent = f.hours.toFixed(2)+"h";
     $("m-credits").textContent = fmtM(f.credits);
@@ -162,6 +170,7 @@ function onFrame(f){
     $("m-api").textContent = fmt(f.api);
     $("m-transit").textContent = f.ships ? fmt(f.ships.transit) : "—";
     chart.push({h:f.hours,c:f.credits}); drawChart();
+    if(f.pos){ positions=f.pos; drawMap(); }
     (f.new_events||[]).forEach(addEvent);
   } else if(f.type==="done"){
     setStatus("done · "+f.stop_reason+" · "+fmtM(f.credits)+" cr · "+fmt(f.trades)+" trades · "+f.wall_secs+"s wall","var(--green)");
@@ -198,6 +207,32 @@ function drawChart(series){
   x.fillText(fmtM(cmax),2,12); x.fillText(fmtM(cmin),2,H-pad+10); x.fillText(hmax.toFixed(1)+"h",W-30,H-8);
 }
 
+function computeMapBounds(){
+  const xs=[], ys=[];
+  for(const k in systems){ xs.push(systems[k][0]); ys.push(systems[k][1]); }
+  mapBounds = xs.length ? {minx:Math.min(...xs),maxx:Math.max(...xs),miny:Math.min(...ys),maxy:Math.max(...ys)} : null;
+}
+function drawMap(){
+  const cv=$("map"), dpr=devicePixelRatio||1;
+  const W=cv.clientWidth, H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr;
+  const x=cv.getContext("2d"); x.scale(dpr,dpr); x.clearRect(0,0,W,H);
+  if(!mapBounds){ x.fillStyle="#8b949e"; x.font="11px monospace"; x.fillText("map loads when the sim starts…",10,20); return; }
+  const pad=16, b=mapBounds;
+  const sx=v=>pad+(W-2*pad)*((v-b.minx)/((b.maxx-b.minx)||1));
+  const sy=v=>pad+(H-2*pad)*((v-b.miny)/((b.maxy-b.miny)||1));
+  x.fillStyle="#1c2330";                       // dim base systems
+  for(const k in systems){ const c=systems[k]; x.beginPath(); x.arc(sx(c[0]),sy(c[1]),1.2,0,7); x.fill(); }
+  let tp=0,th=0,occ=0;
+  for(const k in positions){ const c=systems[k]; if(!c) continue;
+    const X=sx(c[0]), Y=sy(c[1]), p=positions[k][0]||0, h=positions[k][1]||0;
+    if(h){ x.fillStyle="rgba(63,185,80,.85)"; x.beginPath(); x.arc(X,Y,Math.min(2+Math.sqrt(h)*1.6,9),0,7); x.fill(); }
+    if(p){ x.fillStyle="rgba(88,166,255,.8)"; x.beginPath(); x.arc(X,Y,Math.min(1.5+Math.sqrt(p)*1.1,7),0,7); x.fill(); }
+    tp+=p; th+=h; occ++;
+  }
+  x.fillStyle="#8b949e"; x.font="10px monospace";
+  x.fillText(occ+" systems occupied · "+tp+" probes · "+th+" haulers",8,H-8);
+}
+
 async function loadRuns(){
   const rows = await (await fetch("/api/sim/runs")).json();
   $("runs").innerHTML = rows.map(r=>{
@@ -224,8 +259,8 @@ async function openRun(id){
 }
 
 $("launch").onclick=launch; $("stop").onclick=stop;
-addEventListener("resize",()=>drawChart());
-loadRuns(); drawChart();
+addEventListener("resize",()=>{drawChart();drawMap();});
+loadRuns(); drawChart(); drawMap();
 </script>
 </body>
 </html>
