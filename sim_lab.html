@@ -114,6 +114,11 @@
       <h3>Galaxy — <span style="color:var(--accent)">● probes</span> <span style="color:var(--green)">● haulers</span> spreading</h3>
       <canvas id="map" style="height:320px;background:#0a0d12;"></canvas>
     </div>
+    <div class="box" style="margin-bottom:14px;padding:8px 12px;display:flex;align-items:center;gap:10px;">
+      <button id="liveBtn" style="background:var(--green);color:#03210f;padding:5px 10px;border-radius:10px;font-size:10px;font-weight:700;">● LIVE</button>
+      <input id="scrub" type="range" min="0" max="0" value="0" step="1" style="flex:1;">
+      <span id="scrubLabel" class="muted" style="white-space:nowrap;font-size:11px;min-width:130px;text-align:right;">—</span>
+    </div>
     <div id="chartWrap"><canvas id="chart"></canvas></div>
     <div class="split">
       <div class="box"><h3>Live event feed</h3><div class="feed" id="feed"></div></div>
@@ -127,8 +132,10 @@
 const $ = id => document.getElementById(id);
 const fmt = n => n==null ? "—" : Number(n).toLocaleString();
 const fmtM = n => n==null ? "—" : (Math.abs(n)>=1e6 ? (n/1e6).toFixed(2)+"M" : fmt(n));
-let es=null, runId=null, chart=[], credits0=null;
+let es=null, runId=null, credits0=null;
 let systems={}, positions={}, mapBounds=null;
+let frames=[];            // full per-tick history: {h,c,pos,trades,buys,api,ships}
+let cursor=0, follow=true; // cursor = displayed tick index; follow = track newest
 
 function setStatus(t, cls){ $("status").textContent=t; $("status").style.color = cls||"var(--muted)"; }
 
@@ -144,7 +151,7 @@ async function launch(){
   const r = await fetch("/api/sim/launch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(params)});
   const j = await r.json();
   if(!r.ok){ setStatus("error: "+(j.error||r.status),"var(--red)"); return; }
-  runId = j.run_id; chart=[]; credits0=null; $("feed").innerHTML=""; drawChart();
+  runId = j.run_id; frames=[]; cursor=0; follow=true; setLiveBtn(); credits0=null; $("feed").innerHTML=""; render(0);
   $("launch").disabled=true; $("stop").style.display="block";
   es = new EventSource("/api/sim/stream/"+runId);
   es.onmessage = e => onFrame(JSON.parse(e.data));
@@ -160,18 +167,13 @@ function onFrame(f){
   }
   else if(f.type==="start"){
     credits0=f.credits0; setStatus("running "+f.scenario+" · "+f.ships+" ships · "+f.hours+"h");
-    systems=f.systems||{}; positions={}; computeMapBounds(); drawMap();
+    systems=f.systems||{}; frames=[]; cursor=0; computeMapBounds(); $("scrub").max=0; render(0);
   }
   else if(f.type==="tick"){
-    $("m-clock").textContent = f.hours.toFixed(2)+"h";
-    $("m-credits").textContent = fmtM(f.credits);
-    $("m-trades").textContent = fmt(f.trades);
-    $("m-buys").textContent = fmt(f.buys);
-    $("m-api").textContent = fmt(f.api);
-    $("m-transit").textContent = f.ships ? fmt(f.ships.transit) : "—";
-    chart.push({h:f.hours,c:f.credits}); drawChart();
-    if(f.pos){ positions=f.pos; drawMap(); }
+    frames.push({h:f.hours,c:f.credits,pos:f.pos||{},trades:f.trades,buys:f.buys,api:f.api,ships:f.ships});
+    $("scrub").max=Math.max(0,frames.length-1);
     (f.new_events||[]).forEach(addEvent);
+    if(follow){ cursor=frames.length-1; $("scrub").value=cursor; render(cursor); }
   } else if(f.type==="done"){
     setStatus("done · "+f.stop_reason+" · "+fmtM(f.credits)+" cr · "+fmt(f.trades)+" trades · "+f.wall_secs+"s wall","var(--green)");
   } else if(f.type==="error"){ setStatus("sim error: "+f.error,"var(--red)"); }
@@ -191,8 +193,8 @@ function finish(status){ if(es){es.close();es=null;} $("launch").disabled=false;
 
 async function stop(){ if(runId) await fetch("/api/sim/stop/"+runId,{method:"POST"}); }
 
-function drawChart(series){
-  const data = series || chart;
+function drawChart(cursorIdx){
+  const data = frames;
   const cv=$("chart"), dpr=devicePixelRatio||1;
   const W=cv.clientWidth, H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr;
   const x=cv.getContext("2d"); x.scale(dpr,dpr); x.clearRect(0,0,W,H);
@@ -203,9 +205,33 @@ function drawChart(series){
   x.strokeStyle="#30363d"; x.beginPath(); x.moveTo(pad,H-pad); x.lineTo(W-pad,H-pad); x.stroke();
   x.strokeStyle="#3fb950"; x.lineWidth=2; x.beginPath();
   data.forEach((d,i)=>{ const X=px(d.h),Y=py(d.c); i?x.lineTo(X,Y):x.moveTo(X,Y); }); x.stroke();
+  if(cursorIdx!=null && data[cursorIdx]){   // scrub cursor — ties chart to map/slider
+    const CX=px(data[cursorIdx].h);
+    x.strokeStyle="rgba(188,140,255,.9)"; x.lineWidth=1;
+    x.beginPath(); x.moveTo(CX,pad/2); x.lineTo(CX,H-pad); x.stroke();
+    x.fillStyle="rgba(188,140,255,.9)"; x.beginPath(); x.arc(CX,py(data[cursorIdx].c),3,0,7); x.fill();
+  }
   x.fillStyle="#8b949e"; x.font="10px monospace";
   x.fillText(fmtM(cmax),2,12); x.fillText(fmtM(cmin),2,H-pad+10); x.fillText(hmax.toFixed(1)+"h",W-30,H-8);
 }
+
+function render(i){
+  if(!frames.length){ positions={}; drawMap(); drawChart(); $("scrubLabel").textContent="—"; return; }
+  i=Math.max(0,Math.min(i,frames.length-1)); cursor=i;
+  const f=frames[i];
+  $("m-clock").textContent=(f.h!=null?f.h.toFixed(2):"—")+"h";
+  $("m-credits").textContent=fmtM(f.c);
+  $("m-trades").textContent=fmt(f.trades);
+  $("m-buys").textContent=fmt(f.buys);
+  $("m-api").textContent=fmt(f.api);
+  $("m-transit").textContent=f.ships?fmt(f.ships.transit):"—";
+  positions=f.pos||{}; drawMap();
+  drawChart(i);
+  $("scrubLabel").textContent=(f.h!=null?f.h.toFixed(2):"?")+"h ("+(i+1)+"/"+frames.length+")"+(follow?" ● live":"");
+}
+function setLiveBtn(){ const b=$("liveBtn");
+  b.style.background=follow?"var(--green)":"var(--bg3)";
+  b.style.color=follow?"#03210f":"var(--muted)"; b.textContent=follow?"● LIVE":"▶ resume live"; }
 
 function computeMapBounds(){
   const xs=[], ys=[];
@@ -250,17 +276,21 @@ function escape(s){ return s.replace(/[<>&]/g,c=>({"<":"&lt;",">":"&gt;","&":"&a
 
 async function openRun(id){
   const r = await (await fetch("/api/sim/runs/"+id)).json();
-  if(r.series && r.series.length){ chart = r.series.map(s=>({h:s.h,c:s.c})); drawChart(); }
-  const f=r.final||{};
-  $("m-clock").textContent=(f.sim_secs?(f.sim_secs/3600).toFixed(2):"—")+"h";
-  $("m-credits").textContent=fmtM(f.credits); $("m-trades").textContent=fmt(f.trades);
-  $("m-buys").textContent=fmt(f.buys); $("m-api").textContent=fmt(f.api);
+  // Past runs persist a downsampled credits series (no per-tick map snapshots),
+  // so the chart is scrubbable but the map is live-only for now.
+  systems={}; mapBounds=null;
+  frames = (r.series||[]).map(s=>({h:s.h,c:s.c,pos:{},trades:s.tr,api:s.api}));
+  follow=false; setLiveBtn();
+  $("scrub").max=Math.max(0,frames.length-1); $("scrub").value=Math.max(0,frames.length-1);
+  render(frames.length-1);
   setStatus(`run #${id} · ${r.status} · ${JSON.stringify(r.params.cfg||[])}`);
 }
 
 $("launch").onclick=launch; $("stop").onclick=stop;
-addEventListener("resize",()=>{drawChart();drawMap();});
-loadRuns(); drawChart(); drawMap();
+$("scrub").oninput=e=>{ follow=false; setLiveBtn(); render(+e.target.value); };
+$("liveBtn").onclick=()=>{ follow=true; setLiveBtn(); cursor=Math.max(0,frames.length-1); $("scrub").value=cursor; render(cursor); };
+addEventListener("resize",()=>render(cursor));
+loadRuns(); setLiveBtn(); render(0);
 </script>
 </body>
 </html>
