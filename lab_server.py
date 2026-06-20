@@ -261,6 +261,7 @@ async def run_detail(run_id: int) -> Any:
 
 
 _universe_coords: dict[str, list[int]] | None = None
+_universe_edges: list[list[str]] = []
 
 
 @app.route("/api/universe")
@@ -269,11 +270,13 @@ async def universe() -> Any:
     per reset) plus the CURRENT real probe/hauler distribution from prod. The UI
     draws this on page load (like whater's map); a live sim then animates its
     own spread on top, picking up from this same state."""
-    global _universe_coords
+    global _universe_coords, _universe_edges
     pool = await _db()
     if _universe_coords is None:
         rows = await pool.fetch("SELECT symbol, x, y FROM systems")
         _universe_coords = {r["symbol"]: [r["x"], r["y"]] for r in rows}
+        eds = await pool.fetch("SELECT system_a, system_b FROM exploration_edges")
+        _universe_edges = [[e["system_a"], e["system_b"]] for e in eds]
     pos: dict[str, list[int]] = {}
     for s in await pool.fetch("SELECT role, position FROM ships"):
         sys = "-".join(s["position"].split("-")[:2])
@@ -283,7 +286,7 @@ async def universe() -> Any:
         if idx is None:
             continue
         pos.setdefault(sys, [0, 0])[idx] += 1
-    return jsonify({"systems": _universe_coords, "pos": pos})
+    return jsonify({"systems": _universe_coords, "edges": _universe_edges, "pos": pos})
 
 
 @app.route("/healthz")

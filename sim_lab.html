@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>🧪 Sim Lab</title>
+<script src="https://cdn.jsdelivr.net/npm/graphology@0.25.4/dist/graphology.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/sigma@3.0.1/dist/sigma.min.js"></script>
 <style>
   :root {
     --bg:#0e1116; --bg2:#161b22; --bg3:#21262d; --dim:#30363d;
@@ -111,8 +113,8 @@
       <div class="card"><div class="k">In transit</div><div class="v" id="m-transit">—</div></div>
     </div>
     <div class="box" style="margin-bottom:14px;">
-      <h3>Galaxy — <span style="color:var(--accent)">● probes</span> <span style="color:var(--green)">● haulers</span> spreading</h3>
-      <canvas id="map" style="height:320px;background:#0a0d12;"></canvas>
+      <h3>Galaxy — <span style="color:var(--accent)">● probes</span> <span style="color:var(--green)">● haulers</span> · <span id="mapInfo" class="muted"></span></h3>
+      <div id="map" style="height:360px;background:#06090e;"></div>
     </div>
     <div class="box" style="margin-bottom:14px;padding:8px 12px;display:flex;align-items:center;gap:10px;">
       <button id="liveBtn" style="background:var(--green);color:#03210f;padding:5px 10px;border-radius:10px;font-size:10px;font-weight:700;">● LIVE</button>
@@ -133,8 +135,8 @@ const $ = id => document.getElementById(id);
 const fmt = n => n==null ? "—" : Number(n).toLocaleString();
 const fmtM = n => n==null ? "—" : (Math.abs(n)>=1e6 ? (n/1e6).toFixed(2)+"M" : fmt(n));
 let es=null, runId=null, credits0=null;
-let uni={}, nodeArr=[], positions={}, livePos={};   // universe coords + spread overlay
-let mScale=1, mOffX=0, mOffY=0;                       // map pan/zoom transform (CSS px)
+const Graph = (typeof graphology!=="undefined") ? (graphology.Graph||graphology) : null;
+let graph=null, sig=null, uni={}, positions={}, livePos={}, lit=new Set();
 let frames=[];            // full per-tick history: {h,c,pos,trades,buys,api,ships}
 let cursor=0, follow=true; // cursor = displayed tick index; follow = track newest
 
@@ -168,7 +170,10 @@ function onFrame(f){
   }
   else if(f.type==="start"){
     credits0=f.credits0; setStatus("running "+f.scenario+" · "+f.ships+" ships · "+f.hours+"h");
-    if(f.systems && Object.keys(f.systems).length) setUniverse(f.systems); // sim's own universe
+    // greenfield/gate-rush run in a synthetic universe — rebuild the graph from
+    // the sim's own systems (no gate edges in the stream). live reuses the
+    // /api/universe graph (real systems + edges) already mounted.
+    if(f.scenario!=="live" && f.systems && Object.keys(f.systems).length) initMap(f.systems, []);
     frames=[]; cursor=0; $("scrub").max=0; render(0);
   }
   else if(f.type==="tick"){
@@ -218,7 +223,7 @@ function drawChart(cursorIdx){
 }
 
 function render(i){
-  if(!frames.length){ positions=livePos; drawMap(); drawChart(); $("scrubLabel").textContent="live universe (no run)"; return; }
+  if(!frames.length){ applySpread(livePos); drawChart(); $("scrubLabel").textContent="live universe (no run)"; return; }
   i=Math.max(0,Math.min(i,frames.length-1)); cursor=i;
   const f=frames[i];
   $("m-clock").textContent=(f.h!=null?f.h.toFixed(2):"—")+"h";
@@ -227,7 +232,7 @@ function render(i){
   $("m-buys").textContent=fmt(f.buys);
   $("m-api").textContent=fmt(f.api);
   $("m-transit").textContent=f.ships?fmt(f.ships.transit):"—";
-  positions=f.pos||{}; drawMap();
+  applySpread(f.pos||{});
   drawChart(i);
   $("scrubLabel").textContent=(f.h!=null?f.h.toFixed(2):"?")+"h ("+(i+1)+"/"+frames.length+")"+(follow?" ● live":"");
 }
@@ -235,45 +240,48 @@ function setLiveBtn(){ const b=$("liveBtn");
   b.style.background=follow?"var(--green)":"var(--bg3)";
   b.style.color=follow?"#03210f":"var(--muted)"; b.textContent=follow?"● LIVE":"▶ resume live"; }
 
-function setUniverse(coords){
-  uni=coords;
-  nodeArr=Object.keys(coords).map(s=>({s,x:coords[s][0],y:coords[s][1]}));
-  fitView();
+// Build the graphology graph (systems + gate edges) and mount sigma once.
+function initMap(systems, edges){
+  uni=systems;
+  if(!Graph || !window.Sigma){ $("mapInfo").textContent="sigma failed to load"; return; }
+  graph = new Graph();
+  for(const s in systems){ const c=systems[s];
+    graph.addNode(s, {x:c[0], y:-c[1], size:1.1, color:"#222d3d", label:s}); }
+  for(const e of (edges||[])){ const a=e[0],b=e[1];
+    if(graph.hasNode(a)&&graph.hasNode(b)&&!graph.hasEdge(a,b)) graph.addEdge(a,b,{color:"#14202f",size:0.4}); }
+  if(sig) sig.kill();
+  lit=new Set();
+  sig = new Sigma(graph, $("map"), {
+    defaultEdgeColor:"#14202f", minCameraRatio:0.03, maxCameraRatio:10,
+    labelRenderedSizeThreshold:24, enableEdgeEvents:false,
+    labelColor:{color:"#dbe4f0"},
+  });
+  sig.on("enterNode",({node})=>{ const p=positions[node]||[0,0];
+    $("mapInfo").textContent=`${node} — ${p[0]} probes, ${p[1]} haulers`; });
+  sig.on("leaveNode",updateMapInfo);
 }
-function fitView(){
-  if(!nodeArr.length) return;
-  const xs=nodeArr.map(n=>n.x), ys=nodeArr.map(n=>n.y);
-  const minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
-  const cv=$("map"), W=cv.clientWidth, H=cv.clientHeight, pad=20;
-  const w=(maxx-minx)||1, h=(maxy-miny)||1;
-  mScale=Math.min((W-2*pad)/w,(H-2*pad)/h);
-  mOffX=(W-w*mScale)/2-minx*mScale; mOffY=(H-h*mScale)/2-miny*mScale;
+// Recolor/resize nodes for the current spread (diff against the lit set).
+function applySpread(pos){
+  if(!graph) return;
+  positions=pos||{};
+  const next=new Set(Object.keys(positions));
+  for(const s of lit){ if(!next.has(s) && graph.hasNode(s)){
+    graph.setNodeAttribute(s,"size",1.1); graph.setNodeAttribute(s,"color","#222d3d"); } }
+  for(const s of next){ if(!graph.hasNode(s)) continue;
+    const p=positions[s][0]||0, h=positions[s][1]||0;
+    graph.setNodeAttribute(s,"size", 2+Math.sqrt(p+h)*1.7);
+    graph.setNodeAttribute(s,"color", h>0 ? "#3fb950" : "#58a6ff"); }
+  lit=next; updateMapInfo();
+}
+function updateMapInfo(){
+  let tp=0,th=0; for(const s in positions){ tp+=positions[s][0]||0; th+=positions[s][1]||0; }
+  $("mapInfo").textContent=`${Object.keys(positions).length} occupied · ${tp} probes · ${th} haulers · ${graph?graph.order:0} systems`;
 }
 async function loadUniverse(){
   try{ const u=await (await fetch("/api/universe")).json();
-    setUniverse(u.systems||{}); livePos=u.pos||{};
-    if(!frames.length){ positions=livePos; } drawMap();
-  }catch(e){ console.error("universe load failed",e); }
-}
-function drawMap(){
-  const cv=$("map"), dpr=devicePixelRatio||1;
-  const W=cv.clientWidth, H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr;
-  const x=cv.getContext("2d"); x.setTransform(dpr,0,0,dpr,0,0); x.clearRect(0,0,W,H);
-  if(!nodeArr.length){ x.fillStyle="#8b949e"; x.font="11px monospace"; x.fillText("loading universe…",10,20); return; }
-  x.save(); x.translate(mOffX,mOffY); x.scale(mScale,mScale);
-  const r=v=>v/mScale;                          // screen-constant radius
-  x.fillStyle="#1c2330";                        // every mapped system (backdrop)
-  for(const n of nodeArr){ x.beginPath(); x.arc(n.x,n.y,r(1.3),0,7); x.fill(); }
-  let tp=0,th=0,occ=0;
-  for(const s in positions){ const c=uni[s]; if(!c) continue;
-    const p=positions[s][0]||0, h=positions[s][1]||0;
-    if(h){ x.fillStyle="rgba(63,185,80,.9)"; x.beginPath(); x.arc(c[0],c[1],r(2+Math.sqrt(h)*1.8),0,7); x.fill(); }
-    if(p){ x.fillStyle="rgba(88,166,255,.85)"; x.beginPath(); x.arc(c[0],c[1],r(1.5+Math.sqrt(p)*1.2),0,7); x.fill(); }
-    tp+=p; th+=h; occ++;
-  }
-  x.restore();
-  x.fillStyle="#8b949e"; x.font="10px monospace";
-  x.fillText(occ+" occupied · "+tp+" probes · "+th+" haulers · "+nodeArr.length+" systems · drag/scroll to pan/zoom",8,H-8);
+    livePos=u.pos||{}; initMap(u.systems||{}, u.edges||[]);
+    if(!frames.length) applySpread(livePos);
+  }catch(e){ console.error("universe load failed",e); $("mapInfo").textContent="universe load failed"; }
 }
 
 async function loadRuns(){
@@ -305,18 +313,7 @@ async function openRun(id){
 $("launch").onclick=launch; $("stop").onclick=stop;
 $("scrub").oninput=e=>{ follow=false; setLiveBtn(); render(+e.target.value); };
 $("liveBtn").onclick=()=>{ follow=true; setLiveBtn(); cursor=Math.max(0,frames.length-1); $("scrub").value=cursor; render(cursor); };
-addEventListener("resize",()=>{fitView();render(cursor);});
-// Map pan/zoom (whater-style): drag to pan, wheel to zoom around the cursor.
-(function(){ const cv=$("map"); let drag=false,lx=0,ly=0;
-  cv.addEventListener("mousedown",e=>{drag=true;lx=e.clientX;ly=e.clientY;});
-  addEventListener("mouseup",()=>drag=false);
-  addEventListener("mousemove",e=>{ if(!drag)return; mOffX+=e.clientX-lx; mOffY+=e.clientY-ly; lx=e.clientX;ly=e.clientY; drawMap(); });
-  cv.addEventListener("wheel",e=>{ e.preventDefault();
-    const b=cv.getBoundingClientRect(), mx=e.clientX-b.left, my=e.clientY-b.top, f=e.deltaY<0?1.2:0.8;
-    mOffX=mx-(mx-mOffX)*f; mOffY=my-(my-mOffY)*f; mScale*=f; drawMap();
-  },{passive:false});
-  cv.style.cursor="grab";
-})();
+addEventListener("resize",()=>{ if(sig) sig.refresh(); drawChart(cursor); });
 loadUniverse(); loadRuns(); setLiveBtn(); render(0);
 </script>
 </body>
