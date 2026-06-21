@@ -281,11 +281,12 @@ function updateMapInfo(){
   let tp=0,th=0; for(const s in positions){ tp+=positions[s][0]||0; th+=positions[s][1]||0; }
   $("mapInfo").textContent=`${Object.keys(positions).length} occupied · ${tp} probes · ${th} haulers · ${graph?graph.order:0} systems`;
 }
-async function loadUniverse(){
-  try{ const u=await (await fetch("/api/universe")).json();
+async function loadUniverse(rid){
+  try{ const u=await (await fetch("/api/universe"+(rid?("?reset="+encodeURIComponent(rid)):""))).json();
     livePos=u.pos||{}; initMap(u.systems||{}, u.edges||[]);
     if(!frames.length) applySpread(livePos);
-  }catch(e){ console.error("universe load failed",e); $("mapInfo").textContent="universe load failed"; }
+    return Object.keys(u.systems||{}).length;
+  }catch(e){ console.error("universe load failed",e); $("mapInfo").textContent="universe load failed"; return 0; }
 }
 
 async function loadRuns(){
@@ -329,6 +330,7 @@ async function loadPlayback(){
   setStatus("loading recorded week…","var(--purple)");
   try{
     const rid = $("pbReset").value;
+    await loadUniverse(rid);   // show THIS week's universe before animating its spread
     const d = await (await fetch("/api/playback?reset="+encodeURIComponent(rid))).json();
     if(!d.frames || !d.frames.length){ setStatus("no recorded data for this reset","var(--yellow)"); return; }
     frames = d.frames.map(f=>({h:f.hours, c:f.credits, pos:f.pos, below_floor:f.below_floor}));

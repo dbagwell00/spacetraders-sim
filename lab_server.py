@@ -260,43 +260,50 @@ async def run_detail(run_id: int) -> Any:
     })
 
 
-_universe_coords: dict[str, list[int]] | None = None
-_universe_edges: list[list[str]] = []
+_universe_cache: dict[str, dict[str, Any]] = {}  # reset_id -> {systems, edges}
+
+
+async def _current_reset(pool: Any) -> str:
+    return (await pool.fetchval(
+        "SELECT reset_id FROM agent_tokens ORDER BY created_at DESC LIMIT 1")) or ""
 
 
 @app.route("/api/universe")
 async def universe() -> Any:
-    """The live universe backdrop: every system's galaxy coords (cached — static
-    per reset) plus the CURRENT real probe/hauler distribution from prod. The UI
-    draws this on page load (like whater's map); a live sim then animates its
-    own spread on top, picking up from this same state."""
-    global _universe_coords, _universe_edges
+    """A reset's universe: that reset's system coords + gate edges (now that
+    systems is reset-scoped, no stale cross-reset geometry — galaxy-spanning
+    edges are gone because their endpoints belong to other resets). ?reset=
+    picks the week (default current). `pos` (the live ship distribution) is only
+    returned for the current reset; prior weeks get their spread from playback.
+    Edges only exist for the current reset (exploration_edges is wiped each
+    reset), so prior-week maps show nodes only."""
     pool = await _db()
-    if _universe_coords is None:
-        rows = await pool.fetch("SELECT symbol, x, y FROM systems")
-        _universe_coords = {r["symbol"]: [r["x"], r["y"]] for r in rows}
-        # Drop galaxy-spanning edges: typical gate is ~1.8k units, then a gap to
-        # ~35k+ outliers (stale cross-reset edges whose symbol now sits elsewhere
-        # in the regenerated universe). The JOIN also drops edges to systems we
-        # don't have coords for.
-        max_edge = float(os.environ.get("UNIVERSE_MAX_EDGE_LEN", "8000"))
+    cur = await _current_reset(pool)
+    rid = request.args.get("reset") or cur
+    if rid not in _universe_cache:
+        rows = await pool.fetch(
+            "SELECT symbol, x, y FROM systems WHERE reset_id = $1", rid)
+        systems = {r["symbol"]: [r["x"], r["y"]] for r in rows}
         eds = await pool.fetch(
             "SELECT ee.system_a, ee.system_b FROM exploration_edges ee "
-            "JOIN systems sa ON sa.symbol=ee.system_a "
-            "JOIN systems sb ON sb.symbol=ee.system_b "
-            "WHERE power(sa.x-sb.x,2)+power(sa.y-sb.y,2) < power($1,2)",
-            max_edge)
-        _universe_edges = [[e["system_a"], e["system_b"]] for e in eds]
+            "JOIN systems sa ON sa.symbol = ee.system_a AND sa.reset_id = $1 "
+            "JOIN systems sb ON sb.symbol = ee.system_b AND sb.reset_id = $1", rid)
+        _universe_cache[rid] = {
+            "systems": systems,
+            "edges": [[e["system_a"], e["system_b"]] for e in eds]}
+    u = _universe_cache[rid]
     pos: dict[str, list[int]] = {}
-    for s in await pool.fetch("SELECT role, position FROM ships"):
-        sys = "-".join(s["position"].split("-")[:2])
-        role = s["role"]
-        idx = 0 if role in ("SATELLITE", "EXPLORER") else (
-            1 if "HAULER" in role else None)
-        if idx is None:
-            continue
-        pos.setdefault(sys, [0, 0])[idx] += 1
-    return jsonify({"systems": _universe_coords, "edges": _universe_edges, "pos": pos})
+    if rid == cur:
+        for s in await pool.fetch("SELECT role, position FROM ships"):
+            sys = "-".join(s["position"].split("-")[:2])
+            role = s["role"]
+            idx = 0 if role in ("SATELLITE", "EXPLORER") else (
+                1 if "HAULER" in role else None)
+            if idx is None:
+                continue
+            pos.setdefault(sys, [0, 0])[idx] += 1
+    return jsonify({"reset": rid, "systems": u["systems"],
+                    "edges": u["edges"], "pos": pos})
 
 
 @app.route("/api/resets")
