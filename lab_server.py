@@ -275,7 +275,17 @@ async def universe() -> Any:
     if _universe_coords is None:
         rows = await pool.fetch("SELECT symbol, x, y FROM systems")
         _universe_coords = {r["symbol"]: [r["x"], r["y"]] for r in rows}
-        eds = await pool.fetch("SELECT system_a, system_b FROM exploration_edges")
+        # Drop galaxy-spanning edges: typical gate is ~1.8k units, then a gap to
+        # ~35k+ outliers (stale cross-reset edges whose symbol now sits elsewhere
+        # in the regenerated universe). The JOIN also drops edges to systems we
+        # don't have coords for.
+        max_edge = float(os.environ.get("UNIVERSE_MAX_EDGE_LEN", "8000"))
+        eds = await pool.fetch(
+            "SELECT ee.system_a, ee.system_b FROM exploration_edges ee "
+            "JOIN systems sa ON sa.symbol=ee.system_a "
+            "JOIN systems sb ON sb.symbol=ee.system_b "
+            "WHERE power(sa.x-sb.x,2)+power(sa.y-sb.y,2) < power($1,2)",
+            max_edge)
         _universe_edges = [[e["system_a"], e["system_b"]] for e in eds]
     pos: dict[str, list[int]] = {}
     for s in await pool.fetch("SELECT role, position FROM ships"):
