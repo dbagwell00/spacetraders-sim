@@ -99,6 +99,10 @@
     <textarea id="cfg" placeholder="hauler_one_per_system=true&#10;manifest_routes_per_system=1"></textarea>
     <button id="launch">▶ Launch sim</button>
     <button id="stop" style="width:100%;margin-top:8px;display:none;">■ Stop</button>
+    <div style="display:flex;gap:6px;margin-top:8px;">
+      <select id="pbReset" style="flex:1;" title="which week to replay"></select>
+      <button id="playback" style="background:var(--purple);color:#1a0a2e;white-space:nowrap;">📼 Replay</button>
+    </div>
     <div id="status"></div>
   </div>
 
@@ -310,11 +314,41 @@ async function openRun(id){
   setStatus(`run #${id} · ${r.status} · ${JSON.stringify(r.params.cfg||[])}`);
 }
 
+// ── Playback: replay the real recorded week from spread_snapshot ──
+let playTimer=null;
+function stopPlay(){ if(playTimer){ clearInterval(playTimer); playTimer=null; } }
+async function loadResets(){
+  try{
+    const d = await (await fetch("/api/resets")).json();
+    $("pbReset").innerHTML = (d.resets||[]).map(r=>
+      `<option value="${r.reset_id}"${r.is_current?" selected":""}>${r.reset_id}${r.is_current?" (now)":""} · ${r.systems} sys · ${r.hours}h</option>`).join("");
+  }catch(e){ console.error("resets load failed",e); }
+}
+async function loadPlayback(){
+  stopPlay(); if(es){ es.close(); es=null; }
+  setStatus("loading recorded week…","var(--purple)");
+  try{
+    const rid = $("pbReset").value;
+    const d = await (await fetch("/api/playback?reset="+encodeURIComponent(rid))).json();
+    if(!d.frames || !d.frames.length){ setStatus("no recorded data for this reset","var(--yellow)"); return; }
+    frames = d.frames.map(f=>({h:f.hours, c:f.credits, pos:f.pos, below_floor:f.below_floor}));
+    follow=false; setLiveBtn(); $("feed").innerHTML="";
+    $("scrub").max=frames.length-1; cursor=0; $("scrub").value=0;
+    setStatus(`📼 real reset ${d.reset} · ${d.count} frames · ${d.spans_h}h — playing…`,"var(--purple)");
+    render(0);
+    playTimer=setInterval(()=>{
+      if(cursor>=frames.length-1){ stopPlay(); setStatus("📼 end of week — drag the slider to scrub","var(--purple)"); return; }
+      cursor++; $("scrub").value=cursor; render(cursor);
+    }, 140);
+  }catch(e){ console.error(e); setStatus("playback failed","var(--red)"); }
+}
+
 $("launch").onclick=launch; $("stop").onclick=stop;
-$("scrub").oninput=e=>{ follow=false; setLiveBtn(); render(+e.target.value); };
+$("playback").onclick=loadPlayback;
+$("scrub").oninput=e=>{ stopPlay(); follow=false; setLiveBtn(); render(+e.target.value); };
 $("liveBtn").onclick=()=>{ follow=true; setLiveBtn(); cursor=Math.max(0,frames.length-1); $("scrub").value=cursor; render(cursor); };
 addEventListener("resize",()=>{ if(sig) sig.refresh(); drawChart(cursor); });
-loadUniverse(); loadRuns(); setLiveBtn(); render(0);
+loadUniverse(); loadRuns(); loadResets(); setLiveBtn(); render(0);
 </script>
 </body>
 </html>

@@ -299,6 +299,81 @@ async def universe() -> Any:
     return jsonify({"systems": _universe_coords, "edges": _universe_edges, "pos": pos})
 
 
+@app.route("/api/resets")
+async def resets() -> Any:
+    """Weeks available to replay (from spread_snapshot), newest first."""
+    pool = await _db()
+    rows = await pool.fetch(
+        "SELECT reset_id, count(DISTINCT system) systems, "
+        "MIN(ts) first_ts, MAX(ts) last_ts "
+        "FROM spread_snapshot GROUP BY reset_id ORDER BY MIN(ts) DESC")
+    cur = await pool.fetchrow(
+        "SELECT reset_id FROM agent_tokens ORDER BY created_at DESC LIMIT 1")
+    current = cur["reset_id"] if cur else None
+    return jsonify({"current": current, "resets": [
+        {"reset_id": r["reset_id"], "systems": r["systems"],
+         "hours": round((r["last_ts"] - r["first_ts"]) / 3600.0, 1),
+         "is_current": r["reset_id"] == current} for r in rows]})
+
+
+@app.route("/api/playback")
+async def playback() -> Any:
+    """Replay a whole reset's REAL recorded state — no sim. spread_snapshot has
+    the per-system probe/hauler distribution every ~few minutes for the entire
+    week; ops_snapshot/credits_history carry the gauges. Returns downsampled
+    frames the UI feeds into the same scrubber/map as a sim run, so you can
+    scrub the actual week's expansion and correlate it with credits/below_floor."""
+    import bisect
+    rid = request.args.get("reset") or os.environ.get("ST_RESET_ID", "")
+    pool = await _db()
+    if not rid:
+        row = await pool.fetchrow(
+            "SELECT reset_id FROM agent_tokens ORDER BY created_at DESC LIMIT 1")
+        rid = row["reset_id"] if row else ""
+    rows = await pool.fetch(
+        "SELECT ts, system, probes, traders FROM spread_snapshot "
+        "WHERE reset_id = $1 ORDER BY ts", rid)
+    if not rows:
+        return jsonify({"reset": rid, "frames": []})
+    by_ts: dict[float, dict[str, list[int]]] = {}
+    for r in rows:
+        by_ts.setdefault(r["ts"], {})[r["system"]] = [r["probes"], r["traders"]]
+    tss = sorted(by_ts)
+
+    cred = await pool.fetch(
+        "SELECT ts, credits FROM credits_history WHERE reset_id=$1 ORDER BY ts", rid)
+    cred_ts = [c["ts"] for c in cred]
+    cred_v = [c["credits"] for c in cred]
+    ops = await pool.fetch(
+        "SELECT ts, metadata FROM ops_snapshot WHERE reset_id=$1 ORDER BY ts", rid)
+    ops_ts: list[float] = []
+    ops_bf: list[Any] = []
+    for o in ops:
+        m = o["metadata"]
+        m = json.loads(m) if isinstance(m, str) else (m or {})
+        ops_ts.append(o["ts"])
+        ops_bf.append(((m.get("exploit") or {}).get("below_floor_ratio")))
+
+    def near(ts_list: list[float], val_list: list[Any], t: float) -> Any:
+        if not ts_list:
+            return None
+        i = bisect.bisect_right(ts_list, t) - 1
+        return val_list[i] if i >= 0 else None
+
+    max_frames = int(os.environ.get("PLAYBACK_MAX_FRAMES", "300"))
+    step = max(1, len(tss) // max_frames)
+    t0 = tss[0]
+    frames = [{
+        "t": round(t, 1),
+        "hours": round((t - t0) / 3600.0, 3),
+        "credits": near(cred_ts, cred_v, t),
+        "below_floor": near(ops_ts, ops_bf, t),
+        "pos": by_ts[t],
+    } for t in tss[::step]]
+    return jsonify({"reset": rid, "frames": frames, "count": len(frames),
+                    "spans_h": round((tss[-1] - t0) / 3600.0, 1)})
+
+
 @app.route("/healthz")
 async def healthz() -> Any:
     return jsonify({"ok": True, "running": list(_procs.keys())})
